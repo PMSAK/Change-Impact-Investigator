@@ -70,3 +70,29 @@ class TestGenerateInvoice:
         order = _make_order(customer_type="vip")
         text = generate_invoice(order)["text"]
         assert "vip" in text
+
+    # --- regression test added with fix for invoice total bug ---
+
+    def test_member_discount_reflected_in_invoice_total(self):
+        """
+        Regression: generate_invoice was recalculating order_total from
+        subtotal (ignoring discount) instead of using the pre-computed
+        order_total from checkout.  For a member with a 5% discount on a
+        $65 order the invoice must report $71.69, not $75.94.
+        """
+        order = _make_order(
+            subtotal=65.00,
+            discount=3.25,
+            taxable_amount=61.75,
+            tax=4.94,
+            items_total=66.69,
+            shipping=5.00,
+            order_total=71.69,
+            customer_type="member",
+        )
+        totals = generate_invoice(order)["totals"]
+        # Must equal the discounted total, NOT subtotal + tax + shipping
+        assert totals["order_total"] == 71.69, (
+            "Invoice total must use the pre-computed order_total "
+            f"(got {totals['order_total']}, expected 71.69)"
+        )
