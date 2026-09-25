@@ -20,7 +20,8 @@ from impact_investigator.test_finder import (
     detect_coverage_gaps,
     detect_value_path_gaps,
     _collect_string_literals_in_calls,
-    _collect_dict_string_keys,
+    _collect_dict_string_keys_for_names,
+    _uppercase_names_referenced_in_func,
     _imported_names,
 )
 
@@ -207,21 +208,101 @@ class TestCollectStringLiterals:
         assert literals == set()
 
 
-class TestCollectDictKeys:
-    def test_finds_discount_rates_keys(self):
-        keys = _collect_dict_string_keys(PRICING_PY)
+class TestUppercaseNamesReferencedInFunc:
+    def test_calculate_discount_references_discount_rates(self):
+        names = _uppercase_names_referenced_in_func(PRICING_PY, "calculate_discount")
+        assert "DISCOUNT_RATES" in names
+
+    def test_calculate_subtotal_references_no_uppercase_names(self):
+        names = _uppercase_names_referenced_in_func(PRICING_PY, "calculate_subtotal")
+        # calculate_subtotal does not touch any UPPER_CASE constant
+        assert "DISCOUNT_RATES" not in names
+
+    def test_calculate_tax_references_tax_rate(self):
+        names = _uppercase_names_referenced_in_func(PRICING_PY, "calculate_tax")
+        assert "TAX_RATE" in names
+        assert "DISCOUNT_RATES" not in names
+
+    def test_unknown_function_returns_empty(self):
+        names = _uppercase_names_referenced_in_func(PRICING_PY, "no_such_func_xyz")
+        assert names == set()
+
+
+class TestCollectDictStringKeysForNames:
+    def test_finds_discount_rates_keys_when_name_included(self):
+        keys = _collect_dict_string_keys_for_names(PRICING_PY, {"DISCOUNT_RATES"})
         assert "regular" in keys
         assert "member" in keys
         assert "vip" in keys
 
-    def test_ignores_lowercase_dict_names(self):
+    def test_excludes_keys_when_name_not_in_set(self):
+        # Requesting TAX_RATE — it exists but is a float, not a dict with string keys
+        keys = _collect_dict_string_keys_for_names(PRICING_PY, {"TAX_RATE"})
+        assert keys == set()
+
+    def test_empty_names_set_returns_empty(self):
+        keys = _collect_dict_string_keys_for_names(PRICING_PY, set())
+        assert keys == set()
+
+    def test_ignores_dicts_not_in_requested_names(self):
         with tempfile.NamedTemporaryFile(
             suffix=".py", mode="w", delete=False, encoding="utf-8"
         ) as f:
-            f.write('my_dict = {"a": 1, "b": 2}\n')
+            f.write('RATES_A = {"x": 1}\nRATES_B = {"y": 2}\n')
             name = f.name
         try:
-            keys = _collect_dict_string_keys(name)
-            assert keys == set()
+            keys = _collect_dict_string_keys_for_names(name, {"RATES_A"})
+            assert "x" in keys
+            assert "y" not in keys
         finally:
             os.unlink(name)
+
+
+# ---------------------------------------------------------------------------
+# False-positive regression tests (the core bug this fix addresses)
+# ---------------------------------------------------------------------------
+
+class TestValuePathGapScopingRegression:
+    """
+    Prove that value-path gaps are scoped to the target function's own
+    UPPER_CASE constant references, not to all constants in the file.
+    """
+
+    def test_calculate_discount_detects_vip_gap(self):
+        """Intentional gap: 'vip' is in DISCOUNT_RATES but never passed in tests."""
+        gaps = detect_value_path_gaps(
+            "calculate_discount", PRICING_PY,
+            [TEST_PRICING_PY, str(DEMO_ROOT / "tests" / "test_checkout.py")]
+        )
+        gap_texts = " ".join(gaps)
+        assert "vip" in gap_texts.lower(), (
+            f"Expected VIP gap but got: {gaps}"
+        )
+
+    def test_calculate_subtotal_has_no_false_positive_discount_gaps(self):
+        """
+        calculate_subtotal does not reference DISCOUNT_RATES, so member/regular/vip
+        must NOT appear as coverage gaps for it.
+        """
+        gaps = detect_value_path_gaps(
+            "calculate_subtotal", PRICING_PY,
+            [TEST_PRICING_PY, str(DEMO_ROOT / "tests" / "test_checkout.py")]
+        )
+        gap_texts = " ".join(gaps).lower()
+        assert "member" not in gap_texts, f"False positive 'member' for calculate_subtotal: {gaps}"
+        assert "regular" not in gap_texts, f"False positive 'regular' for calculate_subtotal: {gaps}"
+        assert "vip" not in gap_texts, f"False positive 'vip' for calculate_subtotal: {gaps}"
+
+    def test_calculate_tax_has_no_false_positive_discount_gaps(self):
+        """
+        calculate_tax only uses TAX_RATE (a float scalar, not a string-keyed dict),
+        so member/regular/vip must NOT appear as coverage gaps for it.
+        """
+        gaps = detect_value_path_gaps(
+            "calculate_tax", PRICING_PY,
+            [TEST_PRICING_PY, str(DEMO_ROOT / "tests" / "test_checkout.py")]
+        )
+        gap_texts = " ".join(gaps).lower()
+        assert "member" not in gap_texts, f"False positive 'member' for calculate_tax: {gaps}"
+        assert "regular" not in gap_texts, f"False positive 'regular' for calculate_tax: {gaps}"
+        assert "vip" not in gap_texts, f"False positive 'vip' for calculate_tax: {gaps}"

@@ -242,16 +242,16 @@ def _collect_string_literals_in_calls(file_path: str, func_name: str) -> Set[str
     return literals
 
 
-def _collect_dict_string_keys(file_path: str) -> Set[str]:
+def _uppercase_names_referenced_in_func(file_path: str, func_name: str) -> Set[str]:
     """
-    Scan *file_path* for module-level UPPER_CASE dict assignments and return
-    their string keys.
+    Parse *file_path*, find the function named *func_name*, and return all
+    UPPER_CASE names whose attributes are accessed inside that function's body.
 
-    Only looks at top-level assignments like:
-        DISCOUNT_RATES = {"regular": 0.0, "vip": 0.10}
+    This covers both direct accesses (``DISCOUNT_RATES[x]``) and method calls
+    (``DISCOUNT_RATES.get(x, 0)``).
 
-    Ignores dicts inside functions (return statements, local vars) to avoid
-    false positives.
+    Only the function's own AST body is walked — other functions in the same
+    file are excluded, so constants belonging to sibling functions are ignored.
     """
     path = Path(file_path)
     try:
@@ -260,16 +260,59 @@ def _collect_dict_string_keys(file_path: str) -> Set[str]:
     except (OSError, SyntaxError):
         return set()
 
+    # Find the target function node (top-level or nested)
+    target_node = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == func_name
+        ):
+            target_node = node
+            break
+
+    if target_node is None:
+        return set()
+
+    # Walk only the function body and collect UPPER_CASE Name references
+    upper_names: Set[str] = set()
+    for node in ast.walk(target_node):
+        if isinstance(node, ast.Name) and node.id == node.id.upper() and len(node.id) > 1:
+            upper_names.add(node.id)
+    return upper_names
+
+
+def _collect_dict_string_keys_for_names(
+    file_path: str, constant_names: Set[str]
+) -> Set[str]:
+    """
+    Scan the top-level UPPER_CASE dict assignments in *file_path* and return
+    all string keys from assignments whose variable name is in *constant_names*.
+
+    Example: if constant_names = {"DISCOUNT_RATES"} and the file contains
+        DISCOUNT_RATES = {"regular": 0.0, "member": 0.05, "vip": 0.10}
+    then {"regular", "member", "vip"} is returned.
+
+    Assignments whose name is not in *constant_names* are ignored entirely,
+    so constants belonging to other functions produce no false positives.
+    """
+    if not constant_names:
+        return set()
+
+    path = Path(file_path)
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+    except (OSError, SyntaxError):
+        return set()
+
     keys: Set[str] = set()
-    # Only inspect direct children of the module (top-level statements)
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
-        # Check the target name is UPPER_CASE (a constant/config dict)
         for target in node.targets:
             if (
                 isinstance(target, ast.Name)
-                and target.id == target.id.upper()
+                and target.id in constant_names
                 and isinstance(node.value, ast.Dict)
             ):
                 for k in node.value.keys:
@@ -287,21 +330,33 @@ def detect_value_path_gaps(
     Detect untested value paths for *target_func*.
 
     Strategy:
-    1. Collect the string-keyed dicts defined in *target_file* (these represent
-       dispatch tables / enum-like constants, e.g. DISCOUNT_RATES).
-    2. Collect all string literals passed to *target_func* across all test files.
-    3. Any key present in step 1 but absent from step 2 is an untested value path.
+    1. Find which UPPER_CASE constant names the target function's own body
+       references (e.g. ``DISCOUNT_RATES``).
+    2. Collect the string keys of those specific dicts from the file.
+    3. Collect all string literals passed to *target_func* across all test files.
+    4. Any key present in step 2 but absent from step 3 is an untested value path.
+
+    Only dicts actually used by the target function are considered, so sibling
+    functions in the same file cannot inject false positives.
 
     Returns a list of human-readable gap descriptions.
     """
-    known_values = _collect_dict_string_keys(target_file)
+    # Step 1: which UPPER_CASE names does this function touch?
+    constant_names = _uppercase_names_referenced_in_func(target_file, target_func)
+    if not constant_names:
+        return []
+
+    # Step 2: string keys from only those dicts
+    known_values = _collect_dict_string_keys_for_names(target_file, constant_names)
     if not known_values:
         return []
 
+    # Step 3: values actually exercised by tests
     tested_values: Set[str] = set()
     for tf in all_test_files:
         tested_values |= _collect_string_literals_in_calls(tf, target_func)
 
+    # Step 4: gaps
     gaps = []
     for value in sorted(known_values - tested_values):
         gaps.append(
