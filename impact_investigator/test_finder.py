@@ -38,6 +38,8 @@ from impact_investigator.ast_analysis import (
 class TestInfo:
     """Metadata about a single test function."""
 
+    __test__ = False
+
     __slots__ = ("name", "file_path", "references", "class_name")
 
     def __init__(self, name: str, file_path: str, class_name: Optional[str] = None):
@@ -117,11 +119,7 @@ def scan_tests(test_dir: str) -> List[TestInfo]:
         if "__pycache__" in py_file.parts:
             continue
 
-        # Augment each test's references with the file-level imports
-        file_imports = _imported_names(str(py_file))
         tests = _collect_test_functions(str(py_file))
-        for ti in tests:
-            ti.references |= file_imports
         results.extend(tests)
 
     return results

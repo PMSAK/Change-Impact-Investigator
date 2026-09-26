@@ -14,6 +14,8 @@ Provides:
     definition.
 """
 
+import re
+import ast
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -175,3 +177,179 @@ def commits_touching_function(
 def get_repo_root(path: str) -> Optional[str]:
     """Public accessor for the repo root detection."""
     return _find_repo_root(path)
+
+
+def get_working_tree_diff(repo_root: str) -> str:
+    """
+    Return the unified diff of all currently unstaged modifications in the
+    working tree relative to HEAD (equivalent to ``git diff``).
+
+    Returns an empty string when there are no modifications or when
+    *repo_root* is not a valid git repository.
+    """
+    return _run(["git", "diff"], cwd=repo_root)
+
+
+def get_changed_files(repo_root: str) -> List[str]:
+    """
+    Return repository-relative paths of files currently modified in the
+    working tree relative to HEAD.
+
+    Uses ``git diff --name-only`` which lists only tracked files that have
+    unstaged changes.  Untracked files are not included.
+
+    Returns an empty list when there are no modifications or when
+    *repo_root* is not a valid git repository.
+    """
+    out = _run(["git", "diff", "--name-only"], cwd=repo_root)
+    return [line for line in out.splitlines() if line]
+
+def get_changed_functions(diff: str, repo_root: str) -> List[dict]:
+    """
+    Identify Python functions affected by a unified git diff.
+
+    Uses the new/current line numbers from diff hunks and the AST of the
+    current working-tree files to determine which function contains each
+    changed line.
+
+    Returns one result per affected function:
+
+        [
+            {
+                "file": "demo_project/app/pricing.py",
+                "function": "calculate_subtotal",
+                "line": 23,
+            },
+            ...
+        ]
+    """
+    if not diff:
+        return []
+
+    changed_lines_by_file = {}
+    current_file = None
+    new_line = None
+
+    for line in diff.splitlines():
+
+        # Example:
+        # diff --git a/demo_project/app/pricing.py b/demo_project/app/pricing.py
+        if line.startswith("diff --git "):
+            match = re.match(r"diff --git a/(.+) b/(.+)", line)
+            if match:
+                current_file = match.group(2)
+                changed_lines_by_file.setdefault(current_file, set())
+                new_line = None
+            continue
+
+        # Example:
+        # @@ -20,7 +20,7 @@ def calculate_subtotal(items):
+        if line.startswith("@@"):
+            match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+            if match:
+                new_line = int(match.group(1))
+            continue
+
+        if current_file is None or new_line is None:
+            continue
+
+        # Ignore file headers.
+        if line.startswith("+++"):
+            continue
+
+        if line.startswith("---"):
+            continue
+
+        if line.startswith("+"):
+            changed_lines_by_file[current_file].add(new_line)
+            new_line += 1
+
+        elif line.startswith("-"):
+            pass
+
+        elif line.startswith(" "):
+            new_line += 1
+
+    # ---------------------------------------------------------------
+    # Find affected functions
+    # ---------------------------------------------------------------
+
+    results = []
+    seen_functions = set()
+
+    for relative_file, changed_lines in changed_lines_by_file.items():
+
+        if not changed_lines:
+            continue
+
+        file_path = Path(repo_root) / relative_file
+
+        if not file_path.exists() or file_path.suffix != ".py":
+            continue
+
+        try:
+            source = file_path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(file_path))
+        except (OSError, SyntaxError):
+            continue
+
+        functions = []
+
+        for node in ast.walk(tree):
+            if isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef),
+            ):
+                start = node.lineno
+                end = getattr(node, "end_lineno", node.lineno)
+
+                functions.append(
+                    {
+                        "name": node.name,
+                        "start": start,
+                        "end": end,
+                    }
+                )
+
+        # -----------------------------------------------------------
+        # Map changed lines -> containing functions
+        # -----------------------------------------------------------
+
+        for changed_line in sorted(changed_lines):
+
+            containing = [
+                func
+                for func in functions
+                if func["start"] <= changed_line <= func["end"]
+            ]
+
+            if not containing:
+                continue
+
+            # Pick the innermost function for nested functions.
+            containing.sort(
+                key=lambda func: func["end"] - func["start"]
+            )
+
+            function = containing[0]
+
+            # One result per file/function.
+            function_key = (
+                relative_file,
+                function["name"],
+            )
+
+            if function_key in seen_functions:
+                continue
+
+            seen_functions.add(function_key)
+
+            results.append(
+                {
+                    "file": relative_file,
+                    "function": function["name"],
+                    "line": changed_line,
+                }
+            )
+
+    return results

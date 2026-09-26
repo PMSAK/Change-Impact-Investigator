@@ -10,6 +10,7 @@ please) and also as a formatted text string via `format_report()`.
 
 from pathlib import Path
 from typing import Dict, List, Optional
+from impact_investigator.test_runner import run_tests
 
 from impact_investigator.ast_analysis import (
     FunctionInfo,
@@ -30,6 +31,15 @@ from impact_investigator.git_analysis import (
     get_commits_for_file,
     commits_touching_function,
     get_repo_root,
+)
+
+from impact_investigator.git_analysis import (
+    CommitInfo,
+    get_commits_for_file,
+    commits_touching_function,
+    get_repo_root,
+    get_working_tree_diff,
+    get_changed_functions,
 )
 
 
@@ -97,14 +107,46 @@ def build_report(
             c for c in _raw_callers
             if not _is_test_module(c.module)
         ]
-        indirect_callers_map = indirect_callers(target_func, graph, max_depth=3)
-        # Filter test functions from all indirect levels too
+        indirect_callers_map = indirect_callers(
+            target_func,
+            graph,
+            max_depth=3,
+        )
+
+        # Filter test functions from all indirect levels.
         indirect_callers_map = {
-            depth: [c for c in infos if not _is_test_module(c.module)]
+            depth: [
+                c for c in infos
+                if not _is_test_module(c.module)
+            ]
             for depth, infos in indirect_callers_map.items()
-            if infos
         }
-        indirect_callers_map = {k: v for k, v in indirect_callers_map.items() if v}
+
+        # A direct caller should not also appear as an indirect caller.
+        direct_caller_keys = {
+            (c.module, c.name, c.file_path, c.lineno)
+            for c in direct_callers_list
+        }
+
+        for depth in list(indirect_callers_map):
+            indirect_callers_map[depth] = [
+                c
+                for c in indirect_callers_map[depth]
+                if (
+                    c.module,
+                    c.name,
+                    c.file_path,
+                    c.lineno,
+                ) not in direct_caller_keys
+            ]
+
+        # Remove empty depth levels.
+        indirect_callers_map = {
+            depth: callers
+            for depth, callers in indirect_callers_map.items()
+            if callers
+        }
+
         direct_callees_list = find_callees(target_func, graph)
 
     # ── 3. Scan tests ────────────────────────────────────────────────────
@@ -118,9 +160,15 @@ def build_report(
 
     related_tests: List[TestInfo] = []
     coverage_gaps: List[str] = []
+    test_results = {}
 
     if target_func:
         related_tests = find_related_tests(target_func, all_tests)
+
+        if related_tests:
+            test_node_ids = [test.pytest_id for test in related_tests]
+            test_results = run_tests(project_root, test_node_ids)
+
         coverage_gaps = detect_coverage_gaps(
             target_func, all_tests, direct_callers_list
         )
@@ -172,6 +220,7 @@ def build_report(
         related_tests=related_tests,
         coverage_gaps=coverage_gaps,
         git_func_history=git_func_history,
+        test_results=test_results,
     )
 
     return {
@@ -181,6 +230,7 @@ def build_report(
         "indirect_callers": indirect_callers_map,
         "direct_callees": direct_callees_list,
         "related_tests": related_tests,
+        "test_results": test_results,
         "coverage_gaps": coverage_gaps,
         "git_file_history": git_file_history,
         "git_func_history": git_func_history,
@@ -195,11 +245,14 @@ def _compute_risk_summary(
     related_tests,
     coverage_gaps,
     git_func_history,
+    test_results=None,
 ) -> str:
     """Produce a short evidence-based risk narrative."""
     lines = []
 
-    total_indirect = sum(len(v) for v in indirect_callers_map.values())
+    total_indirect = sum(
+        len(v) for v in indirect_callers_map.values()
+    )
 
     if target_func:
         n_callers = len(direct_callers)
@@ -207,46 +260,130 @@ def _compute_risk_summary(
         n_gaps = len(coverage_gaps)
         n_commits = len(git_func_history)
 
-        lines.append(f"Function '{target_func}' was targeted.")
+        failed_tests = (
+            len(test_results.get("failed_tests", []))
+            if test_results
+            else 0
+        )
 
+        # Determine how many RELATED tests are currently failing.
+        failed_related = 0
+
+        if test_results:
+            failed_test_ids = {
+                test_id.replace("\\", "/")
+                for test_id in test_results.get("failed_tests", [])
+            }
+
+            for test in related_tests:
+                test_id = test.pytest_id.replace("\\", "/")
+
+                if test_id in failed_test_ids:
+                    failed_related += 1
+
+        lines.append(
+            f"Function '{target_func}' was targeted."
+        )
+
+        # Direct callers
         if n_callers == 0:
-            lines.append("  - No other functions call this function directly -- limited blast radius.")
-        else:
-            names = ", ".join(f"{c.module}.{c.name}" for c in direct_callers)
-            lines.append(f"  - {n_callers} direct caller(s): {names}.")
-
-        if total_indirect > 0:
-            lines.append(f"  - {total_indirect} indirect caller(s) reachable within 3 hops.")
-
-        if n_tests == 0:
-            lines.append("  - [WARN] No tests directly cover this function -- change is unverified.")
-        else:
-            lines.append(f"  - {n_tests} test(s) cover this function.")
-
-        if n_gaps > 0:
-            lines.append(f"  - [WARN] {n_gaps} coverage gap(s) detected (see Coverage Gaps section).")
-
-        if n_commits == 0:
-            lines.append("  - No recent Git history found for this function.")
-        else:
             lines.append(
-                f"  - This function was touched in {n_commits} commit(s) --"
-                " review Git history for context."
+                "  - No other functions call this function directly "
+                "-- limited blast radius."
+            )
+        else:
+            names = ", ".join(
+                f"{c.module}.{c.name}"
+                for c in direct_callers
+            )
+            lines.append(
+                f"  - {n_callers} direct caller(s): {names}."
             )
 
-        # Risk level heuristic
-        risk_score = n_callers + total_indirect + n_gaps * 2 - n_tests
-        if risk_score <= 0:
+        # Indirect callers
+        if total_indirect > 0:
+            lines.append(
+                f"  - {total_indirect} indirect caller(s) "
+                f"reachable within 3 hops."
+            )
+
+        # Related tests
+        if n_tests == 0:
+            lines.append(
+                "  - [WARN] No tests directly cover this function "
+                "-- change is unverified."
+            )
+        else:
+            lines.append(
+                f"  - {n_tests} test(s) cover this function."
+            )
+
+        # Test failures
+        if test_results:
+            if failed_tests > 0:
+                lines.append(
+                    f"  - [WARN] {failed_tests} test(s) are currently failing."
+                )
+            else:
+                lines.append(
+                    "  - All related tests are currently passing."
+                )
+
+            if failed_related > 0:
+                lines.append(
+                    f"  - [WARN] {failed_related}/{n_tests} "
+                    f"related test(s) are currently failing."
+                )
+
+        # Coverage gaps
+        if n_gaps > 0:
+            lines.append(
+                f"  - [WARN] {n_gaps} coverage gap(s) detected "
+                "(see Coverage Gaps section)."
+            )
+
+        # Git history
+        if n_commits == 0:
+            lines.append(
+                "  - No recent Git history found for this function."
+            )
+        else:
+            lines.append(
+                f"  - This function was touched in {n_commits} "
+                "commit(s) -- review Git history for context."
+            )
+
+        # Risk heuristic
+        risk_score = (
+            n_callers
+            + total_indirect
+            + (n_gaps * 2)
+            + (failed_tests * 2)
+        )
+
+        if n_tests == 0:
+            risk_score += 2
+
+        if risk_score <= 2:
             level = "LOW"
-        elif risk_score <= 3:
+        elif risk_score <= 5:
             level = "MEDIUM"
         else:
             level = "HIGH"
+
         lines.append(f"\n  Risk level: {level}")
+
     else:
-        lines.append("File-level analysis (no specific function targeted).")
-        lines.append(f"  - {len(related_tests)} related test(s) found.")
-        lines.append(f"  - {len(git_func_history)} relevant commits in history.")
+        lines.append(
+            "File-level analysis (no specific function targeted)."
+        )
+        lines.append(
+            f"  - {len(related_tests)} related test(s) found."
+        )
+        lines.append(
+            f"  - {len(git_func_history)} relevant commits "
+            "in history."
+        )
 
     return "\n".join(lines)
 
@@ -301,13 +438,54 @@ def format_report(report: dict) -> str:
 
     # Related tests
     tests = report["related_tests"]
+    test_results = report.get("test_results", {})
+
+    failed_test_ids = {
+    test_id.replace("\\", "/")
+    for test_id in test_results.get("failed_tests", [])
+}
+
     lines.append(f"[Related tests] ({len(tests)})")
+
     if tests:
         for t in tests:
-            lines.append(f"  [PASS] {t.pytest_id}")
+            if t.pytest_id.replace("\\", "/") in failed_test_ids:
+                lines.append(f"  [FAIL] {t.pytest_id}")
+            else:
+                lines.append(f"  [PASS] {t.pytest_id}")
     else:
         lines.append("  [WARN] No related tests found!")
+
     lines.append("")
+
+    # Test execution summary
+    if test_results:
+        total = test_results.get("total", 0)
+        passed = test_results.get("passed", 0)
+        failed = test_results.get("failed", 0)
+        errors = test_results.get("errors", 0)
+
+        lines.append("[Test results]")
+        lines.append(f"  Total  : {total}")
+        lines.append(f"  Passed : {passed}")
+        lines.append(f"  Failed : {failed}")
+        lines.append(f"  Errors : {errors}")
+
+        if tests:
+            related_failed = sum(
+                1
+                for t in tests
+                if t.pytest_id.replace("\\", "/") in failed_test_ids
+            )
+            related_passed = len(tests) - related_failed
+
+            lines.append("")
+            lines.append(
+                f"  Related tests failing: "
+                f"{related_failed}/{len(tests)}"
+            )
+
+        lines.append("")
 
     # Coverage gaps
     gaps = report["coverage_gaps"]
@@ -345,3 +523,96 @@ def format_report(report: dict) -> str:
     lines.append(sep)
 
     return "\n".join(lines)
+
+def analyze_working_tree(
+    repo_root: str,
+    test_dirs: Optional[List[str]] = None,
+    source_dirs: Optional[List[str]] = None,
+    diff: Optional[str] = None,
+) -> List[dict]:
+    """
+    Analyze changes and produce impact reports.
+
+    If `diff` is provided, analyze that diff directly.
+    Otherwise, analyze the current unstaged working-tree diff.
+
+    Pipeline:
+        diff
+        -> changed functions
+        -> related tests
+        -> full impact reports
+    """
+
+    # ---------------------------------------------------------------
+    # 1. Get the diff
+    # ---------------------------------------------------------------
+
+    if diff is None:
+        diff = get_working_tree_diff(repo_root)
+
+    if not diff:
+        return []
+
+    # ---------------------------------------------------------------
+    # 2. Find functions affected by the diff
+    # ---------------------------------------------------------------
+
+    changed_functions = get_changed_functions(
+        diff,
+        repo_root,
+    )
+
+    if not changed_functions:
+        return []
+
+    # ---------------------------------------------------------------
+    # 3. Default test directory
+    # ---------------------------------------------------------------
+
+    if test_dirs is None:
+        test_dirs = [repo_root]
+
+    # ---------------------------------------------------------------
+    # 4. Restrict analysis to source directories
+    # ---------------------------------------------------------------
+
+    if source_dirs:
+        normalized_source_dirs = [
+            source_dir.replace("\\", "/").rstrip("/")
+            for source_dir in source_dirs
+        ]
+
+        changed_functions = [
+            changed
+            for changed in changed_functions
+            if any(
+                changed["file"].replace("\\", "/").startswith(
+                    source_dir + "/"
+                )
+                for source_dir in normalized_source_dirs
+            )
+        ]
+
+    # ---------------------------------------------------------------
+    # 5. Build impact report for every changed function
+    # ---------------------------------------------------------------
+
+    reports = []
+
+    for changed in changed_functions:
+        report = build_report(
+            target_path=str(
+                Path(repo_root) / changed["file"]
+            ),
+            target_func=changed["function"],
+            project_root=repo_root,
+            test_dirs=test_dirs,
+        )
+
+        # Keep information about the actual change that triggered
+        # this report.
+        report["changed_line"] = changed["line"]
+
+        reports.append(report)
+
+    return reports

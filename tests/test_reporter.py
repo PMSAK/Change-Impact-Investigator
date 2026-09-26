@@ -56,6 +56,7 @@ class TestBuildReportDiscountFunction:
             "related_tests", "coverage_gaps",
             "git_file_history", "git_func_history",
             "risk_summary",
+            "test_results",
         }
         assert set(report.keys()) == expected
 

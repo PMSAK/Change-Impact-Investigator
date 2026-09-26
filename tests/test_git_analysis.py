@@ -14,11 +14,16 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from unittest.mock import patch
+
 from impact_investigator.git_analysis import (
     get_commits_for_file,
     commits_touching_function,
     get_repo_root,
+    get_working_tree_diff,
+    get_changed_files,
     _find_repo_root,
+    _run,
 )
 
 REPO_ROOT = str(Path(__file__).parent.parent)
@@ -106,3 +111,122 @@ class TestCommitsTouchingFunction:
             "totally_nonexistent_func_xyz", PRICING_PY, REPO_ROOT
         )
         assert len(commits) == 0
+
+
+# ---------------------------------------------------------------------------
+# get_working_tree_diff
+# ---------------------------------------------------------------------------
+
+_FAKE_DIFF = (
+    "diff --git a/demo_project/app/pricing.py b/demo_project/app/pricing.py\n"
+    "index abc1234..def5678 100644\n"
+    "--- a/demo_project/app/pricing.py\n"
+    "+++ b/demo_project/app/pricing.py\n"
+    "@@ -5,6 +5,6 @@ TAX_RATE = 0.08\n"
+    "-TAX_RATE = 0.08\n"
+    "+TAX_RATE = 0.09\n"
+)
+
+
+class TestGetWorkingTreeDiff:
+    def test_returns_string(self):
+        """get_working_tree_diff always returns a str."""
+        with patch("impact_investigator.git_analysis._run", return_value=_FAKE_DIFF):
+            result = get_working_tree_diff(REPO_ROOT)
+        assert isinstance(result, str)
+
+    def test_returns_mocked_diff_text(self):
+        with patch("impact_investigator.git_analysis._run", return_value=_FAKE_DIFF):
+            result = get_working_tree_diff(REPO_ROOT)
+        assert result == _FAKE_DIFF
+
+    def test_passes_git_diff_command(self):
+        """Verify the exact git command forwarded to _run."""
+        with patch("impact_investigator.git_analysis._run", return_value="") as mock_run:
+            get_working_tree_diff(REPO_ROOT)
+        mock_run.assert_called_once_with(["git", "diff"], cwd=REPO_ROOT)
+
+    def test_returns_empty_string_when_no_changes(self):
+        with patch("impact_investigator.git_analysis._run", return_value=""):
+            result = get_working_tree_diff(REPO_ROOT)
+        assert result == ""
+
+    def test_live_call_returns_string(self):
+        """Live integration: result must be a str (content varies by working-tree state)."""
+        result = get_working_tree_diff(REPO_ROOT)
+        assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# get_changed_files
+# ---------------------------------------------------------------------------
+
+class TestGetChangedFiles:
+    def test_returns_list(self):
+        """get_changed_files always returns a list."""
+        with patch("impact_investigator.git_analysis._run", return_value=""):
+            result = get_changed_files(REPO_ROOT)
+        assert isinstance(result, list)
+
+    def test_parses_single_file(self):
+        with patch(
+            "impact_investigator.git_analysis._run",
+            return_value="demo_project/app/pricing.py\n",
+        ):
+            result = get_changed_files(REPO_ROOT)
+        assert result == ["demo_project/app/pricing.py"]
+
+    def test_parses_multiple_files(self):
+        fake_output = (
+            "demo_project/app/pricing.py\n"
+            "demo_project/app/checkout.py\n"
+        )
+        with patch("impact_investigator.git_analysis._run", return_value=fake_output):
+            result = get_changed_files(REPO_ROOT)
+        assert result == [
+            "demo_project/app/pricing.py",
+            "demo_project/app/checkout.py",
+        ]
+
+    def test_empty_output_returns_empty_list(self):
+        with patch("impact_investigator.git_analysis._run", return_value=""):
+            result = get_changed_files(REPO_ROOT)
+        assert result == []
+
+    def test_blank_lines_excluded(self):
+        """Blank lines in git output (e.g. trailing newline) are stripped."""
+        with patch(
+            "impact_investigator.git_analysis._run",
+            return_value="\nsome/file.py\n\n",
+        ):
+            result = get_changed_files(REPO_ROOT)
+        assert result == ["some/file.py"]
+
+    def test_passes_git_diff_name_only_command(self):
+        """Verify the exact git command forwarded to _run."""
+        with patch("impact_investigator.git_analysis._run", return_value="") as mock_run:
+            get_changed_files(REPO_ROOT)
+        mock_run.assert_called_once_with(
+            ["git", "diff", "--name-only"], cwd=REPO_ROOT
+        )
+
+    def test_live_call_returns_list(self):
+        """Live integration: result is a list of strings (content varies)."""
+        result = get_changed_files(REPO_ROOT)
+        assert isinstance(result, list)
+        assert all(isinstance(f, str) for f in result)
+
+    def test_live_call_excludes_untracked_files(self, tmp_path):
+        """
+        Untracked files must not appear in the output.
+        Create a new file in the repo, then verify get_changed_files
+        does not list it (git diff --name-only only shows tracked modifications).
+        """
+        new_file = Path(REPO_ROOT) / "demo_project" / "_untracked_sentinel.py"
+        try:
+            new_file.write_text("# sentinel\n", encoding="utf-8")
+            result = get_changed_files(REPO_ROOT)
+            assert "demo_project/_untracked_sentinel.py" not in result
+        finally:
+            if new_file.exists():
+                new_file.unlink()
