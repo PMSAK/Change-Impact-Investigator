@@ -204,6 +204,18 @@ def get_changed_files(repo_root: str) -> List[str]:
     out = _run(["git", "diff", "--name-only"], cwd=repo_root)
     return [line for line in out.splitlines() if line]
 
+def _is_test_file(relative_file: str) -> bool:
+    path = Path(relative_file)
+    parts = {part.lower() for part in path.parts}
+    name = path.name.lower()
+
+    return (
+        "test" in parts
+        or "tests" in parts
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+    )
+
 def get_changed_functions(diff: str, repo_root: str) -> List[dict]:
     """
     Identify Python functions affected by a unified git diff.
@@ -285,6 +297,10 @@ def get_changed_functions(diff: str, repo_root: str) -> List[dict]:
         file_path = Path(repo_root) / relative_file
 
         if not file_path.exists() or file_path.suffix != ".py":
+            continue
+
+        # Skip files that are clearly test files.
+        if _is_test_file(relative_file):
             continue
 
         try:
