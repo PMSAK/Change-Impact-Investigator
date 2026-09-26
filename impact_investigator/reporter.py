@@ -26,12 +26,6 @@ from impact_investigator.test_finder import (
     detect_coverage_gaps,
     detect_value_path_gaps,
 )
-from impact_investigator.git_analysis import (
-    CommitInfo,
-    get_commits_for_file,
-    commits_touching_function,
-    get_repo_root,
-)
 
 from impact_investigator.git_analysis import (
     CommitInfo,

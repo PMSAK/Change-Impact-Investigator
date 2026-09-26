@@ -2,6 +2,7 @@ import re
 import subprocess
 import sys
 from typing import List, Dict, Union
+from pathlib import Path
 
 
 def run_tests(
@@ -36,10 +37,30 @@ def run_tests(
             test_paths = test_path
 
         # Pytest node IDs use "/" as the path separator.
-        test_paths = [
-            path.replace("\\", "/")
-            for path in test_paths
-        ]
+        normalized_paths = []
+
+        for path in test_paths:
+            # Separate the filesystem path from the pytest node ID.
+            if "::" in path:
+                file_path, node = path.split("::", 1)
+            else:
+                file_path, node = path, ""
+
+            file_path = Path(file_path)
+
+            # If the path exists from the current process, convert it
+            # to an absolute path before pytest changes into project_root.
+            if not file_path.is_absolute():
+                file_path = file_path.resolve()
+
+            normalized = str(file_path).replace("\\", "/")
+
+            if node:
+                normalized += "::" + node
+
+            normalized_paths.append(normalized)
+
+        test_paths = normalized_paths
 
         command.extend(test_paths)
 
