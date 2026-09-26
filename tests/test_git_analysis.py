@@ -140,11 +140,23 @@ class TestGetWorkingTreeDiff:
             result = get_working_tree_diff(REPO_ROOT)
         assert result == _FAKE_DIFF
 
-    def test_passes_git_diff_command(self):
-        """Verify the exact git command forwarded to _run."""
-        with patch("impact_investigator.git_analysis._run", return_value="") as mock_run:
-            get_working_tree_diff(REPO_ROOT)
-        mock_run.assert_called_once_with(["git", "diff"], cwd=REPO_ROOT)
+    def test_passes_staged_and_unstaged_git_diff_commands(self):
+        """Verify both staged and unstaged diffs are requested."""
+        with patch(
+            "impact_investigator.git_analysis._run",
+            side_effect=["UNSTAGED", "STAGED"],
+        ) as mock_run:
+            result = get_working_tree_diff(REPO_ROOT)
+
+        assert result == "UNSTAGEDSTAGED"
+
+        assert mock_run.call_count == 2
+        assert mock_run.call_args_list[0].args == (
+            ["git", "diff"],
+        )
+        assert mock_run.call_args_list[1].args == (
+            ["git", "diff", "--cached"],
+        )
 
     def test_returns_empty_string_when_no_changes(self):
         with patch("impact_investigator.git_analysis._run", return_value=""):

@@ -1,7 +1,16 @@
+from unittest.mock import patch
+
 from impact_investigator.engine import analyze_question
 
 
-def test_analyze_question_local_repository(tmp_path):
+@patch(
+    "impact_investigator.engine.generate_impact_assessment",
+    return_value="Mock AI assessment",
+)
+def test_analyze_question_local_repository(
+    mock_ai,
+    tmp_path,
+):
     repo = tmp_path / "repo"
     app = repo / "app"
     tests = repo / "tests"
@@ -39,7 +48,7 @@ def test_subtotal():
         encoding="utf-8",
     )
 
-    query, report, handle = analyze_question(
+    query, report, ai_assessment, handle = analyze_question(
         str(repo),
         "What happens if I change calculate_subtotal in app/pricing.py?",
         test_dirs=["tests"],
@@ -53,6 +62,8 @@ def test_subtotal():
 
         assert len(report["direct_callers"]) == 1
         assert report["direct_callers"][0].name == "calculate_total"
+
+        assert ai_assessment == "Mock AI assessment"
 
         assert handle is None
 
