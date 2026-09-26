@@ -33,7 +33,7 @@ import json
 import os
 import sys
 
-from impact_investigator.engine import analyze_question_with_ai
+from impact_investigator.engine import analyze_question
 
 
 # Force UTF-8 output on Windows so non-ASCII report characters
@@ -227,8 +227,8 @@ def main(argv=None):
             return 1
 
         try:
-            query, report, ai_answer, repository_handle = (
-                analyze_question_with_ai(
+            query, report, ai_assessment, repository_handle = (
+                analyze_question(
                     source=args.source,
                     question=args.question,
                 )
@@ -252,7 +252,7 @@ def main(argv=None):
                 print("  AI IMPACT ASSESSMENT")
                 print("=" * 60)
 
-                print(ai_answer)
+                print(ai_assessment)
 
             finally:
                 if repository_handle is not None:
