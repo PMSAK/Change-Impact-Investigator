@@ -15,6 +15,8 @@ from typing import Optional
 from impact_investigator.query import AnalysisQuery, parse_query
 from impact_investigator.analyzer import analyze_repository
 
+from impact_investigator.ai import analyze_with_ai
+
 
 def analyze_question(
     source: str,
@@ -73,3 +75,35 @@ def analyze_question(
     # ---------------------------------------------------------
 
     return query, report, repository_handle
+
+def analyze_question_with_ai(
+    source: str,
+    question: str,
+    test_dirs: Optional[list[str]] = None,
+):
+    """
+    Analyze a repository question and generate an AI-assisted explanation.
+
+    Returns
+    -------
+    tuple
+        (query, report, ai_answer, repository_handle)
+    """
+
+    query, report, repository_handle = analyze_question(
+        source=source,
+        question=question,
+        test_dirs=test_dirs,
+    )
+
+    try:
+        ai_answer = analyze_with_ai(
+            question=question,
+            report=report,
+        )
+    except Exception:
+        if repository_handle is not None:
+            repository_handle.cleanup()
+        raise
+
+    return query, report, ai_answer, repository_handle

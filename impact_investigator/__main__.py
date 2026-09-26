@@ -33,6 +33,8 @@ import json
 import os
 import sys
 
+from impact_investigator.engine import analyze_question_with_ai
+
 
 # Force UTF-8 output on Windows so non-ASCII report characters
 # are not rejected by the default console codec.
@@ -193,7 +195,77 @@ def main(argv=None):
         help="Analyse functions changed in the current working tree.",
     )
 
+    parser.add_argument(
+        "--ai",
+        action="store_true",
+        help="Use AI to analyze a natural-language question.",
+    )
+
+    parser.add_argument(
+        "--source",
+        help="Repository path, ZIP archive, or GitHub repository URL.",
+    )
+
+    parser.add_argument(
+        "--question",
+        help="Natural-language impact-analysis question.",
+    )
+
     args = parser.parse_args(argv)
+
+    # ---------------------------------------------------------------
+    # AI / natural-language analysis
+    # ---------------------------------------------------------------
+
+    if args.ai:
+        if not args.source:
+            print("Error: --source is required when using --ai.", file=sys.stderr)
+            return 1
+
+        if not args.question:
+            print("Error: --question is required when using --ai.", file=sys.stderr)
+            return 1
+
+        try:
+            query, report, ai_answer, repository_handle = (
+                analyze_question_with_ai(
+                    source=args.source,
+                    question=args.question,
+                )
+            )
+
+            try:
+                print("\n" + "#" * 60)
+                print("  CHANGE IMPACT INVESTIGATOR")
+                print("#" * 60)
+
+                print("\n[Question]")
+                print(args.question)
+
+                print("\n" + "=" * 60)
+                print("  EVIDENCE REPORT")
+                print("=" * 60)
+
+                print(format_report(report))
+
+                print("\n" + "=" * 60)
+                print("  AI IMPACT ASSESSMENT")
+                print("=" * 60)
+
+                print(ai_answer)
+
+            finally:
+                if repository_handle is not None:
+                    repository_handle.cleanup()
+
+        except Exception as exc:
+            print(
+                f"Error during AI analysis: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        return 0
 
     # ---------------------------------------------------------------
     # Resolve project root
