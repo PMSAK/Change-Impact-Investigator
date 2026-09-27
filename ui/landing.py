@@ -16,7 +16,7 @@ def render_landing():
             <div class="eyebrow">✦ Repository intelligence</div>
             <h1>Know the blast radius<br><span>before you change code.</span></h1>
             <div class="hero-copy">
-                Analyze callers, tests, coverage and Git context first — then let AI
+                Analyze callers, tests, coverage and Git context first — Let AI
                 turn the evidence into a concise impact assessment.
             </div>
         </div>
@@ -51,7 +51,7 @@ def render_landing():
         question = st.text_area(
             "What are you changing?",
             placeholder=(
-                "What happens if I change calculate_subtotal "
+                "Something like - What happens if I change calculate_subtotal "
                 "in app/pricing.py?"
             ),
             height=105,
