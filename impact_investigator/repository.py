@@ -38,7 +38,7 @@ def _run_git_clone(url: str, destination: Path) -> None:
     """Clone a Git repository into destination."""
     try:
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(destination)],
+            ["git", "clone", url, str(destination)],
             capture_output=True,
             text=True,
             encoding="utf-8",

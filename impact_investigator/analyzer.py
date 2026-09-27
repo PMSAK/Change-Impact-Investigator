@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Optional
 import tempfile
 
+from impact_investigator.ast_analysis import build_call_graph
+
 from impact_investigator.reporter import build_report
 from impact_investigator.repository import (
     prepare_repository,
@@ -21,16 +23,37 @@ def _resolve_target_file(repository_root: Path, target_file: str) -> Path:
 
     Supports both:
         app/pricing.py
+
     and:
         demo_project/app/pricing.py
 
     when the latter is the actual repository path.
+
+    Rejects paths that attempt to escape the repository.
     """
 
     repository_root = repository_root.resolve()
 
     # Normalize Windows-style paths.
-    normalized_target = target_file.replace("\\", "/").lstrip("./")
+    normalized_target = target_file.replace("\\", "/")
+
+    # ---------------------------------------------------------
+    # Reject path traversal attempts
+    # ---------------------------------------------------------
+    target_parts = Path(normalized_target).parts
+
+    if ".." in target_parts:
+        raise ValueError(
+            "Target file must be located inside the repository."
+        )
+
+    # Remove harmless leading "./" without destroying "../".
+    normalized_target = normalized_target.lstrip("./")
+
+    if not normalized_target:
+        raise ValueError(
+            "Target file must be located inside the repository."
+        )
 
     # ---------------------------------------------------------
     # 1. Exact repository-relative path
@@ -41,13 +64,11 @@ def _resolve_target_file(repository_root: Path, target_file: str) -> Path:
     try:
         direct_path.relative_to(repository_root)
     except ValueError:
-        direct_path = None
+        raise ValueError(
+            "Target file must be located inside the repository."
+        )
 
-    if (
-        direct_path is not None
-        and direct_path.exists()
-        and direct_path.is_file()
-    ):
+    if direct_path.exists() and direct_path.is_file():
         return direct_path
 
     # ---------------------------------------------------------
@@ -68,11 +89,22 @@ def _resolve_target_file(repository_root: Path, target_file: str) -> Path:
 
         relative_path = path.relative_to(repository_root).as_posix()
 
-        if relative_path.endswith("/" + normalized_target):
+        if (
+            relative_path == normalized_target
+            or relative_path.endswith("/" + normalized_target)
+        ):
             matches.append(path)
+
+    # ---------------------------------------------------------
+    # 3. Unique match
+    # ---------------------------------------------------------
 
     if len(matches) == 1:
         return matches[0]
+
+    # ---------------------------------------------------------
+    # 4. Multiple matches
+    # ---------------------------------------------------------
 
     if len(matches) > 1:
         candidates = "\n".join(
@@ -85,6 +117,10 @@ def _resolve_target_file(repository_root: Path, target_file: str) -> Path:
             f"{candidates}\n"
             "Please specify the full repository-relative path."
         )
+
+    # ---------------------------------------------------------
+    # 5. File does not exist
+    # ---------------------------------------------------------
 
     raise FileNotFoundError(
         f"Target file not found in repository: {target_file}"
@@ -205,6 +241,28 @@ def analyze_repository(
         raise
 
     # ---------------------------------------------------------
+    # Validate target function
+    # ---------------------------------------------------------
+
+    if target_func:
+        graph = build_call_graph(str(repository_root))
+
+        target_exists = any(
+            info.name == target_func
+            and Path(info.file_path).resolve() == target_path.resolve()
+            for info in graph.values()
+        )
+
+        if not target_exists:
+            if repository_handle is not None:
+                repository_handle.cleanup()
+
+            raise ValueError(
+                f"Function '{target_func}' does not exist "
+                f"in '{target_file}'."
+            )
+
+    # ---------------------------------------------------------
     # Resolve test directories
     # ---------------------------------------------------------
 
@@ -232,12 +290,20 @@ def analyze_repository(
     # Run existing impact analysis
     # ---------------------------------------------------------
 
-    report = build_report(
-        target_path=str(target_path),
-        target_func=target_func,
-        project_root=str(repository_root),
-        test_dirs=resolved_test_dirs,
-    )
+    try:
+        report = build_report(
+            target_path=str(target_path),
+            target_func=target_func,
+            project_root=str(repository_root),
+            test_dirs=resolved_test_dirs,
+        )
+
+    except Exception:
+        # If analysis fails, especially because the requested function
+        # does not exist, make sure temporary repositories are cleaned up.
+        if repository_handle is not None:
+            repository_handle.cleanup()
+        raise
 
     # Keep absolute paths internal only.
     # The returned report is passed to the UI, API, and AI layer,

@@ -164,19 +164,15 @@ def render_landing():
 
     try:
         with st.spinner("Analyzing repository impact…"):
-
             query, report, ai_answer, repository_handle = analyze_question(
                 source=source.strip(),
                 question=question.strip(),
                 test_dirs=test_dirs or None,
             )
 
-            # The analysis is complete, so clean up
-            # the temporary cloned repository.
             if repository_handle is not None:
                 repository_handle.cleanup()
 
-        # Save result for results.py
         st.session_state.result = {
             "question": question.strip(),
             "query": query,
@@ -186,7 +182,13 @@ def render_landing():
 
         st.rerun()
 
+    except ValueError as exc:
+        st.error(f"❌ {exc}")
+
+    except FileNotFoundError as exc:
+        st.error(f"❌ {exc}")
+
     except Exception as exc:
         st.error(
-            f"Analysis failed: {type(exc).__name__}: {exc}"
+            f"❌ Analysis failed: {type(exc).__name__}: {exc}"
         )

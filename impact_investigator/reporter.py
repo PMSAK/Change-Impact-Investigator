@@ -77,6 +77,31 @@ def build_report(
     # ── 1. Build call graph ──────────────────────────────────────────────
     graph = build_call_graph(project_root)
 
+    # ── 2. Validate the target function ──────────────────────────────────
+    #
+    # An unknown function must NOT be treated as a valid function with
+    # zero callers/tests. That would produce a misleading impact report.
+    #
+    # Validate against BOTH:
+    #   1. function name
+    #   2. exact target file
+    #
+    # This prevents a function with the same name in another file from
+    # being accepted accidentally.
+    if target_func:
+        target_path_resolved = Path(target_path).resolve()
+
+        target_exists = any(
+            info.name == target_func
+            and Path(info.file_path).resolve() == target_path_resolved
+            for info in graph.values()
+        )
+
+        if not target_exists:
+            raise ValueError(
+                f"Function '{target_func}' does not exist in the selected file."
+            )
+
     # ── 2. Resolve the target function ───────────────────────────────────
     direct_callers_list: List[FunctionInfo] = []
     indirect_callers_map: Dict[int, List[FunctionInfo]] = {}

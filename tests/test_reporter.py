@@ -102,6 +102,24 @@ class TestBuildReportDiscountFunction:
         assert isinstance(report["risk_summary"], str)
         assert len(report["risk_summary"]) > 10
 
+# ---------------------------------------------------------------------------
+# build_report — invalid function
+# ---------------------------------------------------------------------------
+
+class TestBuildReportInvalidFunction:
+
+    def test_invalid_function_raises_value_error(self):
+
+        with pytest.raises(
+            ValueError,
+            match=r"Function 'bruh' does not exist in the selected file\.",
+        ):
+            build_report(
+                target_path=PRICING_PY,
+                target_func="bruh",
+                project_root=DEMO_ROOT,
+                test_dirs=[TEST_DIR],
+            )
 
 # ---------------------------------------------------------------------------
 # build_report — file-level (no function specified)
