@@ -10,6 +10,7 @@ please) and also as a formatted text string via `format_report()`.
 
 from pathlib import Path
 from typing import Dict, List, Optional
+
 from impact_investigator.test_runner import run_tests
 
 from impact_investigator.ast_analysis import (
@@ -19,6 +20,7 @@ from impact_investigator.ast_analysis import (
     find_callees,
     indirect_callers,
 )
+
 from impact_investigator.test_finder import (
     TestInfo,
     scan_tests,
@@ -47,6 +49,14 @@ def _is_test_module(module_name: str) -> bool:
     return any(p.startswith("test") for p in parts)
 
 
+def _normalize_test_id(test_id: str) -> str:
+    """
+    Normalize pytest node IDs so Windows and Unix path separators
+    compare consistently.
+    """
+    return str(test_id).replace("\\", "/")
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -59,29 +69,8 @@ def build_report(
 ) -> dict:
     """
     Produce a full impact report for the given target.
-
-    Parameters
-    ----------
-    target_path : str
-        Path to the Python source file that was changed.
-    target_func : str or None
-        Name of the specific function that was changed, or None to report
-        at the file level.
-    project_root : str
-        Root directory of the project (used for call-graph scanning).
-    test_dirs : list[str] or None
-        Directories to scan for tests. Defaults to ``[project_root]``.
-
-    Returns
-    -------
-    dict with keys:
-        target_file, target_func,
-        direct_callers, indirect_callers,
-        direct_callees,
-        related_tests, coverage_gaps,
-        git_file_history, git_func_history,
-        risk_summary
     """
+
     if test_dirs is None:
         test_dirs = [project_root]
 
@@ -95,22 +84,25 @@ def build_report(
 
     if target_func:
         _raw_callers = find_callers(target_func, graph)
-        # Exclude test functions from production callers — test files are
-        # handled separately via the test_finder module.
+
+        # Exclude test functions from production callers.
         direct_callers_list = [
-            c for c in _raw_callers
+            c
+            for c in _raw_callers
             if not _is_test_module(c.module)
         ]
+
         indirect_callers_map = indirect_callers(
             target_func,
             graph,
             max_depth=3,
         )
 
-        # Filter test functions from all indirect levels.
+        # Filter test functions from indirect callers.
         indirect_callers_map = {
             depth: [
-                c for c in infos
+                c
+                for c in infos
                 if not _is_test_module(c.module)
             ]
             for depth, infos in indirect_callers_map.items()
@@ -141,14 +133,19 @@ def build_report(
             if callers
         }
 
-        direct_callees_list = find_callees(target_func, graph)
+        direct_callees_list = find_callees(
+            target_func,
+            graph,
+        )
 
     # ── 3. Scan tests ────────────────────────────────────────────────────
     all_tests: List[TestInfo] = []
     all_test_files: List[str] = []
+
     for td in test_dirs:
         for ti in scan_tests(td):
             all_tests.append(ti)
+
             if ti.file_path not in all_test_files:
                 all_test_files.append(ti.file_path)
 
@@ -157,38 +154,59 @@ def build_report(
     test_results = {}
 
     if target_func:
-        related_tests = find_related_tests(target_func, all_tests)
+        related_tests = find_related_tests(
+            target_func,
+            all_tests,
+        )
 
         if related_tests:
-            test_node_ids = [test.pytest_id for test in related_tests]
-            test_results = run_tests(project_root, test_node_ids)
+            test_node_ids = [
+                test.pytest_id
+                for test in related_tests
+            ]
+
+            test_results = run_tests(
+                project_root,
+                test_node_ids,
+            )
 
         coverage_gaps = detect_coverage_gaps(
-            target_func, all_tests, direct_callers_list
+            target_func,
+            all_tests,
+            direct_callers_list,
         )
-        # Value-path gap detection (e.g. untested 'vip' discount path)
+
+        # Value-path gap detection.
         value_gaps = detect_value_path_gaps(
-            target_func, target_path, all_test_files
+            target_func,
+            target_path,
+            all_test_files,
         )
+
         coverage_gaps.extend(value_gaps)
+
     else:
-        # File-level: find tests whose file imports from the target module.
-        # Check both the module stem and any name imported from that module.
+        # File-level analysis.
         target_stem = Path(target_path).stem
-        # Build a set of all function/class names defined in the target file
+
         target_funcs_in_file = {
             info.name
             for key, info in graph.items()
-            if Path(info.file_path).resolve() == Path(target_path).resolve()
+            if Path(info.file_path).resolve()
+            == Path(target_path).resolve()
         }
+
         seen_test_files: set = set()
+
         for ti in all_tests:
             if ti.file_path in seen_test_files:
                 continue
-            # Match if the test imports anything from the target module,
-            # or if a defined function name appears in the test's references.
+
             if (
-                any(target_stem in ref for ref in ti.references)
+                any(
+                    target_stem in ref
+                    for ref in ti.references
+                )
                 or target_funcs_in_file & ti.references
             ):
                 related_tests.append(ti)
@@ -196,14 +214,21 @@ def build_report(
 
     # ── 4. Git history ───────────────────────────────────────────────────
     repo_root = get_repo_root(target_path)
+
     git_file_history: List[CommitInfo] = []
     git_func_history: List[CommitInfo] = []
 
     if repo_root:
-        git_file_history = get_commits_for_file(target_path, repo_root)
+        git_file_history = get_commits_for_file(
+            target_path,
+            repo_root,
+        )
+
         if target_func:
             git_func_history = commits_touching_function(
-                target_func, target_path, repo_root
+                target_func,
+                target_path,
+                repo_root,
             )
 
     # ── 5. Risk summary ──────────────────────────────────────────────────
@@ -232,6 +257,10 @@ def build_report(
     }
 
 
+# ---------------------------------------------------------------------------
+# Risk summary
+# ---------------------------------------------------------------------------
+
 def _compute_risk_summary(
     target_func,
     direct_callers,
@@ -242,10 +271,12 @@ def _compute_risk_summary(
     test_results=None,
 ) -> str:
     """Produce a short evidence-based risk narrative."""
+
     lines = []
 
     total_indirect = sum(
-        len(v) for v in indirect_callers_map.values()
+        len(v)
+        for v in indirect_callers_map.values()
     )
 
     if target_func:
@@ -260,17 +291,22 @@ def _compute_risk_summary(
             else 0
         )
 
-        # Determine how many RELATED tests are currently failing.
+        # Determine how many RELATED tests are actually failing.
         failed_related = 0
 
         if test_results:
             failed_test_ids = {
-                test_id.replace("\\", "/")
-                for test_id in test_results.get("failed_tests", [])
+                _normalize_test_id(test_id)
+                for test_id in test_results.get(
+                    "failed_tests",
+                    [],
+                )
             }
 
             for test in related_tests:
-                test_id = test.pytest_id.replace("\\", "/")
+                test_id = _normalize_test_id(
+                    test.pytest_id
+                )
 
                 if test_id in failed_test_ids:
                     failed_related += 1
@@ -290,6 +326,7 @@ def _compute_risk_summary(
                 f"{c.module}.{c.name}"
                 for c in direct_callers
             )
+
             lines.append(
                 f"  - {n_callers} direct caller(s): {names}."
             )
@@ -316,7 +353,8 @@ def _compute_risk_summary(
         if test_results:
             if failed_tests > 0:
                 lines.append(
-                    f"  - [WARN] {failed_tests} test(s) are currently failing."
+                    f"  - [WARN] {failed_tests} test(s) "
+                    "are currently failing."
                 )
             else:
                 lines.append(
@@ -326,7 +364,7 @@ def _compute_risk_summary(
             if failed_related > 0:
                 lines.append(
                     f"  - [WARN] {failed_related}/{n_tests} "
-                    f"related test(s) are currently failing."
+                    "related test(s) are currently failing."
                 )
 
         # Coverage gaps
@@ -365,15 +403,19 @@ def _compute_risk_summary(
         else:
             level = "HIGH"
 
-        lines.append(f"\n  Risk level: {level}")
+        lines.append(
+            f"\n  Risk level: {level}"
+        )
 
     else:
         lines.append(
             "File-level analysis (no specific function targeted)."
         )
+
         lines.append(
             f"  - {len(related_tests)} related test(s) found."
         )
+
         lines.append(
             f"  - {len(git_func_history)} relevant commits "
             "in history."
@@ -389,70 +431,174 @@ def _compute_risk_summary(
 def format_report(report: dict) -> str:
     """
     Convert a report dict into a human-readable text report.
+
+    IMPORTANT:
+    A test is marked PASS only when its pytest ID is explicitly present
+    in `passed_tests`.
+
+    A test is marked FAIL only when its pytest ID is explicitly present
+    in `failed_tests`.
+
+    Anything else is marked UNKNOWN rather than incorrectly being treated
+    as passing.
     """
+
     sep = "=" * 60
     thin = "-" * 60
-    lines = [sep, "  CHANGE IMPACT REPORT", sep]
 
-    lines.append(f"Target file : {report['target_file']}")
+    lines = [
+        sep,
+        "  CHANGE IMPACT REPORT",
+        sep,
+    ]
+
+    lines.append(
+        f"Target file : {report['target_file']}"
+    )
+
     if report["target_func"]:
-        lines.append(f"Target func : {report['target_func']}")
+        lines.append(
+            f"Target func : {report['target_func']}"
+        )
+
     lines.append("")
 
-    # Direct callees
+    # ── Direct callees ────────────────────────────────────────────────────
     callees = report["direct_callees"]
-    lines.append(f"[Functions called BY target] ({len(callees)})")
+
+    lines.append(
+        f"[Functions called BY target] ({len(callees)})"
+    )
+
     if callees:
         for c in callees:
-            lines.append(f"  -> {c.module}.{c.name}  (line {c.lineno}  {c.file_path})")
+            lines.append(
+                f"  -> {c.module}.{c.name}  "
+                f"(line {c.lineno}  {c.file_path})"
+            )
     else:
         lines.append("  (none detected)")
+
     lines.append("")
 
-    # Direct callers
+    # ── Direct callers ────────────────────────────────────────────────────
     callers = report["direct_callers"]
-    lines.append(f"[Direct callers of target] ({len(callers)})")
+
+    lines.append(
+        f"[Direct callers of target] ({len(callers)})"
+    )
+
     if callers:
         for c in callers:
-            lines.append(f"  <- {c.module}.{c.name}  (line {c.lineno}  {c.file_path})")
+            lines.append(
+                f"  <- {c.module}.{c.name}  "
+                f"(line {c.lineno}  {c.file_path})"
+            )
     else:
         lines.append("  (none detected)")
+
     lines.append("")
 
-    # Indirect callers
+    # ── Indirect callers ─────────────────────────────────────────────────
     indirect = report["indirect_callers"]
-    total_indirect = sum(len(v) for v in indirect.values())
-    lines.append(f"[Indirect callers] ({total_indirect} across {len(indirect)} depth level(s))")
+
+    total_indirect = sum(
+        len(v)
+        for v in indirect.values()
+    )
+
+    lines.append(
+        f"[Indirect callers] "
+        f"({total_indirect} across "
+        f"{len(indirect)} depth level(s))"
+    )
+
     for depth, infos in sorted(indirect.items()):
         for c in infos:
-            lines.append(f"  depth {depth}  <- {c.module}.{c.name}  (line {c.lineno})")
+            lines.append(
+                f"  depth {depth}  <- "
+                f"{c.module}.{c.name}  "
+                f"(line {c.lineno})"
+            )
+
     if not indirect:
         lines.append("  (none detected)")
+
     lines.append("")
 
-    # Related tests
+    # ── Related tests ────────────────────────────────────────────────────
     tests = report["related_tests"]
-    test_results = report.get("test_results", {})
+    test_results = report.get("test_results") or {}
 
+    # IMPORTANT:
+    # Build BOTH sets explicitly.
+    #
+    # We do NOT assume that every test that isn't failed is passed.
+    # This prevents failed/errored/unreported tests from being displayed
+    # as passing.
     failed_test_ids = {
-    test_id.replace("\\", "/")
-    for test_id in test_results.get("failed_tests", [])
-}
+        _normalize_test_id(test_id)
+        for test_id in test_results.get(
+            "failed_tests",
+            [],
+        )
+    }
 
-    lines.append(f"[Related tests] ({len(tests)})")
+    passed_test_ids = {
+        _normalize_test_id(test_id)
+        for test_id in test_results.get(
+            "passed_tests",
+            [],
+        )
+    }
+
+    error_test_ids = {
+        _normalize_test_id(test_id)
+        for test_id in test_results.get(
+            "error_tests",
+            [],
+        )
+    }
+
+    lines.append(
+        f"[Related tests] ({len(tests)})"
+    )
 
     if tests:
-        for t in tests:
-            if t.pytest_id.replace("\\", "/") in failed_test_ids:
-                lines.append(f"  [FAIL] {t.pytest_id}")
+        for test in tests:
+            normalized = _normalize_test_id(
+                test.pytest_id
+            )
+
+            if normalized in failed_test_ids:
+                lines.append(
+                    f"  [FAIL] {test.pytest_id}"
+                )
+
+            elif normalized in error_test_ids:
+                lines.append(
+                    f"  [ERROR] {test.pytest_id}"
+                )
+
+            elif normalized in passed_test_ids:
+                lines.append(
+                    f"  [PASS] {test.pytest_id}"
+                )
+
             else:
-                lines.append(f"  [PASS] {t.pytest_id}")
+                # Unknown is deliberately NOT treated as PASS.
+                lines.append(
+                    f"  [UNKNOWN] {test.pytest_id}"
+                )
+
     else:
-        lines.append("  [WARN] No related tests found!")
+        lines.append(
+            "  [WARN] No related tests found!"
+        )
 
     lines.append("")
 
-    # Test execution summary
+    # ── Test execution summary ───────────────────────────────────────────
     if test_results:
         total = test_results.get("total", 0)
         passed = test_results.get("passed", 0)
@@ -468,55 +614,135 @@ def format_report(report: dict) -> str:
         if tests:
             related_failed = sum(
                 1
-                for t in tests
-                if t.pytest_id.replace("\\", "/") in failed_test_ids
+                for test in tests
+                if _normalize_test_id(
+                    test.pytest_id
+                ) in failed_test_ids
             )
-            related_passed = len(tests) - related_failed
+
+            related_passed = sum(
+                1
+                for test in tests
+                if _normalize_test_id(
+                    test.pytest_id
+                ) in passed_test_ids
+            )
+
+            related_errors = sum(
+                1
+                for test in tests
+                if _normalize_test_id(
+                    test.pytest_id
+                ) in error_test_ids
+            )
+
+            related_unknown = (
+                len(tests)
+                - related_failed
+                - related_passed
+                - related_errors
+            )
 
             lines.append("")
+
+            lines.append(
+                f"  Related tests passing: "
+                f"{related_passed}/{len(tests)}"
+            )
+
             lines.append(
                 f"  Related tests failing: "
                 f"{related_failed}/{len(tests)}"
             )
 
+            if related_errors:
+                lines.append(
+                    f"  Related tests with errors: "
+                    f"{related_errors}/{len(tests)}"
+                )
+
+            if related_unknown:
+                lines.append(
+                    f"  Related tests with unknown status: "
+                    f"{related_unknown}/{len(tests)}"
+                )
+
         lines.append("")
 
-    # Coverage gaps
+    # ── Coverage gaps ────────────────────────────────────────────────────
     gaps = report["coverage_gaps"]
-    lines.append(f"[Coverage gaps] ({len(gaps)})")
+
+    lines.append(
+        f"[Coverage gaps] ({len(gaps)})"
+    )
+
     if gaps:
-        for g in gaps:
-            lines.append(f"  [WARN] {g}")
+        for gap in gaps:
+            lines.append(
+                f"  [WARN] {gap}"
+            )
     else:
-        lines.append("  (none detected)")
+        lines.append(
+            "  (none detected)"
+        )
+
     lines.append("")
 
-    # Git file history
+    # ── Git file history ─────────────────────────────────────────────────
     file_history = report["git_file_history"]
-    lines.append(f"[Git history — file] ({len(file_history)} commits)")
-    for ci in file_history:
-        lines.append(f"  {ci.one_line()}")
+
+    lines.append(
+        f"[Git history — file] "
+        f"({len(file_history)} commits)"
+    )
+
+    for commit in file_history:
+        lines.append(
+            f"  {commit.one_line()}"
+        )
+
     if not file_history:
-        lines.append("  (no history found — not a git repo, or file not committed)")
+        lines.append(
+            "  (no history found — not a git repo, "
+            "or file not committed)"
+        )
+
     lines.append("")
 
-    # Git function history
+    # ── Git function history ─────────────────────────────────────────────
     func_history = report["git_func_history"]
+
     if report["target_func"]:
-        lines.append(f"[Git history — function '{report['target_func']}'] ({len(func_history)} commits)")
-        for ci in func_history:
-            lines.append(f"  {ci.one_line()}")
+        lines.append(
+            f"[Git history — function "
+            f"'{report['target_func']}'] "
+            f"({len(func_history)} commits)"
+        )
+
+        for commit in func_history:
+            lines.append(
+                f"  {commit.one_line()}"
+            )
+
         if not func_history:
-            lines.append("  (function name not found in any diff)")
+            lines.append(
+                "  (function name not found in any diff)"
+            )
+
         lines.append("")
 
-    # Risk summary
+    # ── Risk summary ─────────────────────────────────────────────────────
     lines.append(thin)
     lines.append("[Risk summary]")
     lines.append(report["risk_summary"])
     lines.append(sep)
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Working-tree analysis
+# ---------------------------------------------------------------------------
 
 def analyze_working_tree(
     repo_root: str,
@@ -580,7 +806,9 @@ def analyze_working_tree(
             changed
             for changed in changed_functions
             if any(
-                changed["file"].replace("\\", "/").startswith(
+                changed["file"]
+                .replace("\\", "/")
+                .startswith(
                     source_dir + "/"
                 )
                 for source_dir in normalized_source_dirs

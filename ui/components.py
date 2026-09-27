@@ -125,9 +125,16 @@ def render_indirect_card(indirect):
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 def render_tests_card(tests, report, total, passed, failed, errors):
+    test_results = report.get("test_results") or {}
+
     failed_ids = {
         str(x).replace("\\", "/")
-        for x in (report.get("failed_test_ids") or [])
+        for x in (test_results.get("failed_tests") or [])
+    }
+
+    passed_ids = {
+        str(x).replace("\\", "/")
+        for x in (test_results.get("passed_tests") or [])
     }
 
     parts = [
@@ -158,11 +165,22 @@ def render_tests_card(tests, report, total, passed, failed, errors):
         for test in tests:
             test_id = get_field(test, "pytest_id", get_field(test, "name", "unknown test"))
             normalized = str(test_id).replace("\\", "/")
-            is_failed = normalized in failed_ids
-            icon = "✕" if is_failed else "✓"
-            cls = "test-fail" if is_failed else "test-pass"
+
+            if normalized in failed_ids:
+                icon = "✕"
+                cls = "test-fail"
+            elif normalized in passed_ids:
+                icon = "✓"
+                cls = "test-pass"
+            else:
+                icon = "?"
+                cls = ""
+
             parts.append(
-                f'<div class="entity"><div class="entity-name {cls}">{icon} &nbsp; {safe(test_id)}</div></div>'
+                f'<div class="entity">'
+                f'<div class="entity-name {cls}">'
+                f'{icon} &nbsp; {safe(test_id)}'
+                f'</div></div>'
             )
 
     parts.append('</div>')
