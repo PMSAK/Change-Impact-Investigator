@@ -20,7 +20,7 @@ def calculate_subtotal(items):
     """
     total = 0.0
     for item in items:
-        total += item["price"] * item["quantity"]
+        total += item["price"] * item["quantity"] + 1
     return round(total, 2)
 
 

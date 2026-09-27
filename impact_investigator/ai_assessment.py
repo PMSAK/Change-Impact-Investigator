@@ -4,6 +4,7 @@ ai_assessment.py
 OpenAI-powered reasoning layer for Change Impact Investigator.
 
 The deterministic analyzer produces the evidence.
+
 This module interprets that evidence and produces a human-readable
 impact assessment.
 """
@@ -12,7 +13,10 @@ import json
 import os
 from typing import Any
 
+from dotenv import load_dotenv
 from openai import OpenAI
+
+load_dotenv()
 
 
 SYSTEM_PROMPT = """
@@ -65,9 +69,6 @@ Never invent evidence that is not present in the supplied report.
 def _serialize_report(report: dict[str, Any]) -> dict[str, Any]:
     """
     Convert the analyzer report into JSON-safe data.
-
-    The report contains dataclass objects such as FunctionInfo,
-    TestInfo, and CommitInfo, which cannot be sent directly to JSON.
     """
 
     def serialize(value):
@@ -100,19 +101,6 @@ def generate_impact_assessment(
 ) -> str:
     """
     Generate an AI impact assessment from deterministic analyzer evidence.
-
-    Parameters
-    ----------
-    question:
-        The user's original natural-language question.
-
-    report:
-        Structured report returned by the deterministic analyzer.
-
-    Returns
-    -------
-    str
-        Human-readable AI assessment.
     """
 
     api_key = os.getenv("OPENAI_API_KEY")
