@@ -13,6 +13,8 @@ import json
 import os
 from typing import Any
 
+from impact_investigator.serialization import report_to_json
+
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -71,28 +73,7 @@ def _serialize_report(report: dict[str, Any]) -> dict[str, Any]:
     Convert the analyzer report into JSON-safe data.
     """
 
-    def serialize(value):
-        if value is None or isinstance(value, (str, int, float, bool)):
-            return value
-
-        if isinstance(value, list):
-            return [serialize(item) for item in value]
-
-        if isinstance(value, dict):
-            return {
-                str(key): serialize(item)
-                for key, item in value.items()
-            }
-
-        if hasattr(value, "__dict__"):
-            return {
-                key: serialize(item)
-                for key, item in value.__dict__.items()
-            }
-
-        return str(value)
-
-    return serialize(report)
+    return report_to_json(report)
 
 
 def generate_impact_assessment(

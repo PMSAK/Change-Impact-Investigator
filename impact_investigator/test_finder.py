@@ -56,7 +56,13 @@ class TestInfo:
 
     @property
     def pytest_id(self) -> str:
-        rel = os.path.relpath(self.file_path)
+        path = Path(self.file_path)
+
+        if path.is_absolute():
+            rel = os.path.relpath(self.file_path)
+        else:
+            rel = path.as_posix()
+
         return f"{rel}::{self.full_name}"
 
     def __repr__(self) -> str:  # pragma: no cover

@@ -90,6 +90,72 @@ def _resolve_target_file(repository_root: Path, target_file: str) -> Path:
         f"Target file not found in repository: {target_file}"
     )
 
+def _to_repo_relative(path: str, repository_root: Path) -> str:
+    """Return a repository-relative path without exposing local filesystem paths."""
+    try:
+        return (
+            Path(path)
+            .resolve()
+            .relative_to(repository_root.resolve())
+            .as_posix()
+        )
+    except ValueError:
+        return "<outside repository>"
+
+
+def _sanitize_report_paths(
+    report: dict,
+    repository_root: Path,
+) -> dict:
+    """Remove machine-specific repository paths from the public report."""
+
+    report["target_file"] = _to_repo_relative(
+        report["target_file"],
+        repository_root,
+    )
+
+    for key in ("direct_callers", "direct_callees"):
+        for info in report.get(key, []):
+            info.file_path = _to_repo_relative(
+                info.file_path,
+                repository_root,
+            )
+
+    for infos in report.get("indirect_callers", {}).values():
+        for info in infos:
+            info.file_path = _to_repo_relative(
+                info.file_path,
+                repository_root,
+            )
+
+    for test in report.get("related_tests", []):
+        test.file_path = _to_repo_relative(
+            test.file_path,
+            repository_root,
+        )
+
+    # Test execution output can also contain the temporary repository path.
+    test_results = report.get("test_results") or {}
+
+    if "output" in test_results:
+        root_text = str(repository_root.resolve())
+        output = str(test_results["output"])
+
+        test_results["output"] = output.replace(
+            root_text,
+            ".",
+        )
+
+        test_results["output"] = test_results["output"].replace(
+            root_text.replace("\\", "/"),
+            ".",
+        )
+
+    report["test_results"] = test_results
+
+    return report
+
+
 def analyze_repository(
     source: str,
     target_file: str,
@@ -171,6 +237,14 @@ def analyze_repository(
         target_func=target_func,
         project_root=str(repository_root),
         test_dirs=resolved_test_dirs,
+    )
+
+    # Keep absolute paths internal only.
+    # The returned report is passed to the UI, API, and AI layer,
+    # so expose repository-relative paths instead.
+    report = _sanitize_report_paths(
+        report,
+        repository_root,
     )
 
     return report, repository_handle

@@ -58,7 +58,9 @@ def get_test_counts(report: dict):
 
 
 def safe(value) -> str:
-    return html.escape(str(value or ""))
+    if value is None:
+        return ""
+    return html.escape(str(value))
 
 
 def risk_class(level: str) -> str:

@@ -47,13 +47,29 @@ def run_tests(
                 file_path, node = path, ""
 
             file_path = Path(file_path)
+            project_root_path = Path(project_root).resolve()
 
-            # If the path exists from the current process, convert it
-            # to an absolute path before pytest changes into project_root.
-            if not file_path.is_absolute():
-                file_path = file_path.resolve()
+            # Pass repository-relative paths to pytest.
+            # Absolute paths would leak temporary clone/extraction
+            # directories into pytest node IDs.
+            if file_path.is_absolute():
+                candidate = file_path.resolve()
+            else:
+                # A pytest node ID may have been generated relative to the
+                # application's working directory.
+                candidate = (project_root_path / file_path).resolve()
 
-            normalized = str(file_path).replace("\\", "/")
+                if not candidate.exists():
+                    candidate = (Path.cwd() / file_path).resolve()
+
+            try:
+                file_path = candidate.relative_to(project_root_path)
+            except ValueError:
+                raise ValueError(
+                    "Test path must be located inside the repository."
+                )
+
+            normalized = file_path.as_posix()
 
             if node:
                 normalized += "::" + node
